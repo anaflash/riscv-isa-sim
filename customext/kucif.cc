@@ -19,6 +19,7 @@
 #include "extension.h"
 #include "mmu.h"
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #define DECODE_MACRO_USAGE_LOGGED 1
@@ -64,10 +65,18 @@ class kucif_t : public extension_t {
       for (int co = 0; co < kNumCO; co++)
         acc_[co] += (int64_t)wtile_[group][il][co] * a2 * scale;
     }
+#ifdef KUCIF_DEBUG
+    fprintf(stderr, "[kucif] parallel bs=%d group=%d buf=%02x%02x acc=%ld,%ld,...\n",
+            bs, group, buf[0], buf[1], (long)acc_[0], (long)acc_[1]);
+#endif
     par_calls_++;
   }
 
   void pim_load(processor_t* p, reg_t out_addr) {
+#ifdef KUCIF_DEBUG
+    fprintf(stderr, "[kucif] load out_addr=%lx acc=%ld,%ld,...\n",
+            (unsigned long)out_addr, (long)acc_[0], (long)acc_[1]);
+#endif
     for (int co = 0; co < kNumCO; co++) {
       p->get_mmu()->store<int32_t>(out_addr + 4 * co, (int32_t)acc_[co]);
       acc_[co] = 0;

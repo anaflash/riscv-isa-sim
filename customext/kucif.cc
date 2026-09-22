@@ -2,7 +2,7 @@
 //
 // Implements the 3 KUCIF commands needed for the anaflash-pim-compiler Week 1
 // demo scope (see docs/kucif_isa.md and
-// docs/kucif_custom_dispatch_plan.md in the anaflash-pim-compiler repo):
+// docs/kucif_custom_dispatch.md in the anaflash-pim-compiler repo):
 //   pim_parallel (funct3=5), pim_rbr (funct3=6, unused stub), pim_load (funct3=7).
 // pim_erase/pim_program/pim_read/pim_loadraw are out of scope: weight state is
 // preloaded at reset() instead of being programmed by the guest binary.
@@ -91,7 +91,7 @@ class kucif_t : public extension_t {
     memset(acc_, 0, sizeof(acc_));
     par_calls_ = rbr_calls_ = load_calls_ = 0;
     // Placeholder weights until pim_program provisioning is implemented
-    // (kucif_custom_dispatch_plan.md scope cut): identity per WL tile so
+    // (kucif_custom_dispatch.md scope cut): identity per WL tile so
     // pim_parallel is trivially checkable (out[co] tracks activation[co]).
     for (int g = 0; g < kMaxGroups; g++)
       for (int il = 0; il < kNumIL; il++)

@@ -5,7 +5,8 @@
 // docs/kucif_custom_dispatch.md in the anaflash-pim-compiler repo):
 //   pim_parallel (funct3=5), pim_rbr (funct3=6, unused stub), pim_load (funct3=7).
 // pim_erase/pim_program/pim_read/pim_loadraw are out of scope: weight state is
-// preloaded at reset() instead of being programmed by the guest binary.
+// preloaded at startup/reset from an optional host-side image instead of being
+// programmed by the guest binary.
 //
 // Semantics (accumulate-then-drain) and the rs1 ABI
 // (rs1 = (bit_slice_index << 24) | weight_tile_group) are taken from the
@@ -20,6 +21,7 @@
 #include "mmu.h"
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #define DECODE_MACRO_USAGE_LOGGED 1
@@ -33,7 +35,9 @@ constexpr int kFunct3Rbr = 6;
 constexpr int kFunct3Load = 7;
 constexpr int kNumIL = 8;    // input lines (parallel MAC reduction width)
 constexpr int kNumCO = 8;    // output channels / BL-groups per WL tile
-constexpr int kMaxGroups = 16;  // <= 16 WL per eFlash macro (docs/kucif_isa.md 3.2)
+// Spike-only virtual address space for tiled GEMM tests. Physical WL/bank
+// mapping is architecture-specific; a real macro currently documents 16 WL.
+constexpr int kMaxGroups = 128;
 
 class kucif_t : public extension_t {
  public:
@@ -53,7 +57,7 @@ class kucif_t : public extension_t {
   void pim_parallel(processor_t* p, reg_t rs1, reg_t buf_addr) {
     int bs = (int)((rs1 >> 24) & 0xff);
     int group = (int)(rs1 & 0x00ffffffULL);
-    if (group >= kMaxGroups || bs >= 4)
+    if (group >= loaded_groups_ || bs >= 4)
       illegal_instruction(*p);
     int scale = 1 << (2 * (3 - bs));
     uint8_t buf[2];
@@ -90,17 +94,50 @@ class kucif_t : public extension_t {
   void init_state() {
     memset(acc_, 0, sizeof(acc_));
     par_calls_ = rbr_calls_ = load_calls_ = 0;
-    // Placeholder weights until pim_program provisioning is implemented
-    // (kucif_custom_dispatch.md scope cut): identity per WL tile so
-    // pim_parallel is trivially checkable (out[co] tracks activation[co]).
+    loaded_groups_ = kMaxGroups;
+    // Keep the identity tile as the no-configuration default for smoke tests.
     for (int g = 0; g < kMaxGroups; g++)
       for (int il = 0; il < kNumIL; il++)
         for (int co = 0; co < kNumCO; co++)
-          wtile_[g][il][co] = (il == co) ? 1 : 0;
+          wtile_[g][il][co] = (il == co) ? 129 : 128;
+
+    const char* image_path = std::getenv("KUCIF_WEIGHT_IMAGE");
+    if (!image_path || !*image_path) return;
+
+    FILE* image = std::fopen(image_path, "rb");
+    if (!image) {
+      std::fprintf(stderr, "[kucif] cannot open weight image '%s'\n", image_path);
+      std::abort();
+    }
+
+    bool invalid_image = std::fseek(image, 0, SEEK_END) != 0;
+    long image_size = invalid_image ? -1 : std::ftell(image);
+    invalid_image = invalid_image || image_size <= 0 ||
+                    image_size > (long)sizeof(wtile_) ||
+                    image_size % sizeof(wtile_[0]) != 0 ||
+                    std::fseek(image, 0, SEEK_SET) != 0;
+    size_t bytes_read = invalid_image
+                            ? 0
+                            : std::fread(wtile_, 1, (size_t)image_size, image);
+    invalid_image = invalid_image || bytes_read != (size_t)image_size ||
+                    std::ferror(image);
+    std::fclose(image);
+    if (invalid_image) {
+      std::fprintf(stderr,
+                   "[kucif] weight image '%s' must contain 1..%d whole tiles (%zu bytes max)\n",
+                   image_path, kMaxGroups, sizeof(wtile_));
+      std::abort();
+    }
+    loaded_groups_ = (int)(image_size / sizeof(wtile_[0]));
+#ifdef KUCIF_DEBUG
+    std::fprintf(stderr, "[kucif] loaded %d weight groups (%ld bytes) from '%s'\n",
+                 loaded_groups_, image_size, image_path);
+#endif
   }
 
   int64_t acc_[kNumCO];
   uint8_t wtile_[kMaxGroups][kNumIL][kNumCO];
+  int loaded_groups_;
   long par_calls_, rbr_calls_, load_calls_;
 };
 
